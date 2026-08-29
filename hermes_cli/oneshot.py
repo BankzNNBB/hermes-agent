@@ -487,6 +487,33 @@ def _run_agent(
                 agent.close()
             except Exception:
                 logging.debug("oneshot agent cleanup failed", exc_info=True)
+            # Fire on_session_finalize before the session store closes.
+            #
+            # gateway/run.py finalizes on shutdown and session expiry; tui_gateway
+            # finalizes in _finalize_session. run_oneshot had no equivalent, and it
+            # exits via os._exit (#43055) which skips atexit — so cron runs and
+            # subagents never emitted the hook at all. Measured 2026-08-29 against
+            # a plugin that posts session boundaries: 51/51 cron and 12/12 subagent
+            # sessions had a start with no matching end, while cli and telegram
+            # (which route through the two paths above) matched every day.
+            #
+            # Placed here, not in _cleanup_oneshot_runtime: that helper is
+            # process-global and has no session_id. Ordered before
+            # session_db.close() so a hook may still read session state.
+            if agent is not None:
+                try:
+                    from hermes_cli import lifecycle
+
+                    lifecycle.finalize_session(
+                        session_id=getattr(agent, "session_id", None),
+                        platform="cli",
+                        reason="oneshot",
+                    )
+                except Exception:
+                    # A misbehaving plugin hook must not abort the remaining
+                    # cleanup — session_db.close() below checkpoints the WAL and
+                    # is the last chance before os._exit.
+                    logging.debug("oneshot session finalize failed", exc_info=True)
         # agent.close() calls session_db.end_session() but leaves the connection
         # open; close it here to checkpoint the WAL before os._exit skips
         # finalizers.
