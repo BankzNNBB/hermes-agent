@@ -2491,6 +2491,31 @@ def _resolve_notification_flag_conflict(
     return watch_patterns, ""
 
 
+def _resolve_evidence_session_id(
+    session_id: Optional[str],
+    task_id: Optional[str],
+    effective_task_id: Optional[str],
+) -> str:
+    """Return the session key that verification evidence is filed under.
+
+    The stop-guard reads the ledger with ``agent.session_id``, so the recorder
+    must write under the same key or a passing ``hermes verify`` can never
+    satisfy the guard for the session that edited the files. Tool calls arrive
+    without an explicit ``session_id`` argument, so fall back to the session
+    bound for this context (``HERMES_SESSION_ID``) — the same source the rest
+    of this module consults — before the task id and the literal default.
+    """
+    if session_id:
+        return str(session_id)
+    try:
+        from gateway.session_context import get_session_env
+
+        bound = get_session_env("HERMES_SESSION_ID", "")
+    except Exception:
+        bound = os.environ.get("HERMES_SESSION_ID", "")
+    return str(bound or task_id or effective_task_id or "default")
+
+
 def _resolve_command_cwd(
     *,
     workdir: Optional[str],
@@ -3502,7 +3527,9 @@ def terminal_tool(
                 evidence = record_terminal_result(
                     command=command,
                     cwd=command_cwd,
-                    session_id=session_id or task_id or effective_task_id or "default",
+                    session_id=_resolve_evidence_session_id(
+                        session_id, task_id, effective_task_id
+                    ),
                     exit_code=returncode,
                     output=output,
                 )
