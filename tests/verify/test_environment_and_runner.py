@@ -150,6 +150,55 @@ class TestReadiness:
         assert not result.readiness.ready
         assert not result.ok
 
+    def _serve(self, status, location=None):
+        port = _free_port()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/next":
+                    self.send_response(200)
+                    self.end_headers()
+                    return
+                self.send_response(status)
+                if location:
+                    self.send_header("Location", location)
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        time.sleep(0.05)
+        return port, server
+
+    def test_5xx_is_not_ready(self, tmp_path):
+        # A Flask app whose DB is missing a column boots, then answers every
+        # request with 500. That is a broken app, not a ready one.
+        port, server = self._serve(500)
+        try:
+            recipe = Recipe(name="x", start="sleep 30", port=port)
+            result = run_verify(tmp_path, recipe, phases=("start",), ready_timeout=3)
+            assert result.readiness.status_code == 500
+            assert not result.readiness.ready
+            assert "500" in (result.readiness.error or "")
+            assert not result.ok
+        finally:
+            server.shutdown()
+
+    def test_4xx_still_counts_as_up(self, tmp_path):
+        # Auth-gated apps answer 401/403/404 on "/"; the server is up and
+        # serving, so readiness keeps treating that as ready.
+        port, server = self._serve(401)
+        try:
+            recipe = Recipe(name="x", start="sleep 30", port=port)
+            result = run_verify(tmp_path, recipe, phases=("start",), ready_timeout=3)
+            assert result.readiness.ready
+            assert result.readiness.status_code == 401
+            assert result.ok
+        finally:
+            server.shutdown()
+
     def test_skip_start(self, tmp_path):
         recipe = Recipe(name="x", test=["true"], start="sleep 30", port=1)
         result = run_verify(tmp_path, recipe, skip_start=True)

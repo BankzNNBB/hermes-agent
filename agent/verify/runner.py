@@ -151,7 +151,12 @@ def _poll_readiness(url: str, timeout: float, interval: float = 1.0) -> tuple[bo
             with urllib.request.urlopen(url, timeout=5) as resp:
                 return True, resp.status, None
         except urllib.error.HTTPError as exc:
-            # The server answered — it is up, even if it returned 4xx/5xx.
+            # The server answered. 4xx still means "up" (auth-gated apps
+            # answer 401/403 on "/"), but 5xx means the app booted and is
+            # broken — e.g. a DB missing a column 500s on every request.
+            # Report that as not ready instead of passing it as green.
+            if exc.code >= 500:
+                return False, exc.code, f"HTTP {exc.code} from readiness URL — the app started but errors on this request"
             return True, exc.code, None
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
             last_error = str(exc)
